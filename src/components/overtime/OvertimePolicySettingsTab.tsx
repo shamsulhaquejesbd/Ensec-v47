@@ -85,13 +85,9 @@ export const OvertimePolicySettingsTab: React.FC = () => {
           <div>
             <h3 className="font-semibold text-slate-100 flex items-center gap-2">
               Statutory Overtime Policy Configuration
-              <span className="px-2 py-0.5 text-[11px] font-semibold bg-emerald-950 text-emerald-300 border border-emerald-800 rounded-full">
-                BD Labor Act 2006 (Sec 108)
-              </span>
+              
             </h3>
-            <p className="text-xs text-slate-400 mt-0.5">
-              Configure standard monthly divisors, overtime wage multipliers, shift allowances, and statutory work duration caps.
-            </p>
+            
           </div>
         </div>
 

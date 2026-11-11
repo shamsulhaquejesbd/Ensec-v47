@@ -225,9 +225,7 @@ export const OvertimeReportsTab: React.FC = () => {
             </span>
             <h3 className="font-semibold text-slate-100">Statutory & Operational Overtime Reporting Engine</h3>
           </div>
-          <p className="text-xs text-slate-400 max-w-2xl">
-            Audit-ready statutory statements, department expense allocations, production batch WIP absorption, and Excel (.xlsx) exports.
-          </p>
+          
         </div>
 
         <button

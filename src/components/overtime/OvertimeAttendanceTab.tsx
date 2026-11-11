@@ -78,9 +78,7 @@ export const OvertimeAttendanceTab: React.FC<OvertimeAttendanceTabProps> = ({ on
                 ZKTeco Bio-Sync Active
               </span>
             </div>
-            <p className="text-xs text-slate-400 mt-1">
-              Separates standard factory shifts (8 AM - 5 PM) from verified overtime punches. Automatic overnight rollover & break deduction applied.
-            </p>
+            
           </div>
         </div>
 

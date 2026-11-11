@@ -62,13 +62,9 @@ export const OvertimeModule: React.FC<OvertimeModuleProps> = ({ initialSubTab = 
         <div>
           <div className="flex items-center gap-2">
             <h1 className="text-xl font-bold text-slate-900 tracking-tight">Overtime Management System</h1>
-            <span className="px-2 py-0.5 text-xs font-semibold bg-blue-100 text-blue-700 rounded-full border border-blue-200">
-              Bangladesh Labor Act 2006 Compliant
-            </span>
+          
           </div>
-          <p className="text-xs text-slate-500 mt-0.5">
-            End-to-end multi-batch overtime allocation, supervisor verification, payroll salary sync, and factory costing absorption.
-          </p>
+          
         </div>
 
         <div className="flex items-center gap-2.5">

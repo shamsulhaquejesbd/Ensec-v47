@@ -170,17 +170,13 @@ export const OvertimeDashboardTab: React.FC<OvertimeDashboardTabProps> = ({
       <div className="p-5 rounded-2xl bg-gradient-to-r from-blue-700 via-indigo-700 to-purple-800 text-white shadow-md flex flex-wrap items-center justify-between gap-4">
         <div className="space-y-1">
           <div className="flex items-center gap-2">
-            <span className="px-2.5 py-0.5 rounded-full bg-white/20 backdrop-blur-xs text-[10px] font-bold tracking-wider uppercase">
-              Integrated Operations Hub
-            </span>
-            <span className="text-xs text-blue-100">Bangladesh Labor Act 2006 Compliant</span>
+          
+            
           </div>
           <h2 className="text-xl font-black tracking-tight">
             Ensec Overtime Management &amp; Batch Costing
           </h2>
-          <p className="text-xs text-blue-100 max-w-2xl">
-            Real-time tracking of staff overtime hours, 4-tier approval workflows, dedicated check-in/out attendance, and automated cost absorption into production batches.
-          </p>
+          
         </div>
 
         <div className="flex items-center gap-2.5 flex-wrap">
