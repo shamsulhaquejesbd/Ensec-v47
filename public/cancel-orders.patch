@@ -1,0 +1,1272 @@
+From 4995d1c2bdac5b0cf47367ac61f50231a1f4d6b1 Mon Sep 17 00:00:00 2001
+From: Shamsul-Haq <shamsulhaque.jesbd@gmail.com>
+Date: Wed, 4 Nov 2026 10:27:07 +0000
+Subject: [PATCH 1/4] feat(manufacturing): add cancel option for production
+ orders in factory batches
+
+---
+ .../manufacturing/ManufacturingModule.tsx     | 287 +++++++++++++++++-
+ src/context/ERPContext.tsx                    |  52 ++++
+ src/types/erp.ts                              |   5 +-
+ 3 files changed, 329 insertions(+), 15 deletions(-)
+
+diff --git a/src/components/manufacturing/ManufacturingModule.tsx b/src/components/manufacturing/ManufacturingModule.tsx
+index aadeee2..63294e9 100644
+--- a/src/components/manufacturing/ManufacturingModule.tsx
++++ b/src/components/manufacturing/ManufacturingModule.tsx
+@@ -18,6 +18,9 @@ import {
+   Check,
+   Upload,
+   Download,
++  Ban,
++  XCircle,
++  X,
+ } from 'lucide-react';
+ import { DeliveryOrderModal } from '../sales/DeliveryOrderModal.tsx';
+ import { ChallanModal } from '../sales/ChallanModal.tsx';
+@@ -48,6 +51,7 @@ export const ManufacturingModule: React.FC<ManufacturingModuleProps> = ({ initia
+     boms,
+     createProductionOrder,
+     completeProductionOrder,
++    cancelProductionOrder,
+     updateProductBOM,
+     salesOrders,
+     dispatchAndInvoiceSalesOrder,
+@@ -75,6 +79,35 @@ export const ManufacturingModule: React.FC<ManufacturingModuleProps> = ({ initia
+     version?: string;
+   }>({ isOpen: false });
+ 
++  // Production Order Cancellation & Filtering State
++  const [orderToCancel, setOrderToCancel] = useState<ProductionOrder | null>(null);
++  const [cancelReason, setCancelReason] = useState('');
++  const [isCancellingOrder, setIsCancellingOrder] = useState(false);
++  const [cancelError, setCancelError] = useState<string | null>(null);
++  const [batchStatusFilter, setBatchStatusFilter] = useState<'All' | 'In Production' | 'Completed' | 'Cancelled'>('All');
++
++  const handleConfirmCancel = async () => {
++    if (!orderToCancel) return;
++    setIsCancellingOrder(true);
++    setCancelError(null);
++    try {
++      const res = await cancelProductionOrder(
++        orderToCancel.id,
++        cancelReason.trim() || 'Cancelled by factory supervisor'
++      );
++      if (res && res.success === false) {
++        setCancelError(res.error || 'Failed to cancel production order');
++      } else {
++        setOrderToCancel(null);
++        setCancelReason('');
++      }
++    } catch (err: any) {
++      setCancelError(err?.message || 'Error occurred while cancelling production order');
++    } finally {
++      setIsCancellingOrder(false);
++    }
++  };
++
+   // New Production Order State
+   const [selectedProductId, setSelectedProductId] = useState(products[0]?.id || '');
+   const [plannedQty, setPlannedQty] = useState(50);
+@@ -450,12 +483,43 @@ export const ManufacturingModule: React.FC<ManufacturingModuleProps> = ({ initia
+ 
+           {/* Batches Table */}
+           <div className="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 overflow-hidden shadow-xs">
+-            <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
++            <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between flex-wrap gap-3">
+               <div>
+                 <h2 className="font-bold text-sm text-slate-900 dark:text-white">
+                   Factory Production Orders & Batches
+                 </h2>
+-                
++                <p className="text-xs text-slate-500">
++                  Track assembly batches, material issues, unit costing, and order cancellation
++                </p>
++              </div>
++              <div className="flex items-center gap-1.5 bg-slate-100 dark:bg-slate-800/80 p-1 rounded-xl text-xs">
++                {(['All', 'In Production', 'Completed', 'Cancelled'] as const).map((filter) => {
++                  const count =
++                    filter === 'All'
++                      ? productionOrders.length
++                      : filter === 'In Production'
++                      ? productionOrders.filter((p) => p.status === 'In Production' || p.status === 'In Assembly' || p.status === 'Planned' || p.status === 'Testing & QC').length
++                      : filter === 'Completed'
++                      ? productionOrders.filter((p) => p.status === 'Completed' || p.status === 'Transferred').length
++                      : productionOrders.filter((p) => p.status === 'Cancelled').length;
++                  return (
++                    <button
++                      key={filter}
++                      type="button"
++                      onClick={() => setBatchStatusFilter(filter)}
++                      className={`px-2.5 py-1 rounded-lg font-semibold text-[11px] transition cursor-pointer ${
++                        batchStatusFilter === filter
++                          ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-xs'
++                          : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
++                      }`}
++                    >
++                      {filter}
++                      <span className="ml-1.5 px-1.5 py-0.2 rounded-full text-[10px] bg-slate-200/80 dark:bg-slate-600/80">
++                        {count}
++                      </span>
++                    </button>
++                  );
++                })}
+               </div>
+             </div>
+ 
+@@ -475,18 +539,46 @@ export const ManufacturingModule: React.FC<ManufacturingModuleProps> = ({ initia
+                   </tr>
+                 </thead>
+                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800 font-medium">
+-                  {productionOrders.length === 0 ? (
++                  {productionOrders.filter((order) => {
++                    if (batchStatusFilter === 'All') return true;
++                    if (batchStatusFilter === 'In Production') {
++                      return order.status === 'In Production' || order.status === 'In Assembly' || order.status === 'Planned' || order.status === 'Testing & QC';
++                    }
++                    if (batchStatusFilter === 'Completed') {
++                      return order.status === 'Completed' || order.status === 'Transferred';
++                    }
++                    if (batchStatusFilter === 'Cancelled') {
++                      return order.status === 'Cancelled';
++                    }
++                    return true;
++                  }).length === 0 ? (
+                     <tr>
+                       <td colSpan={9} className="p-12 text-center text-slate-400">
+                         <Building className="w-10 h-10 mx-auto mb-2 opacity-30 text-slate-400" />
+-                        <p className="font-semibold text-sm">No production orders scheduled yet.</p>
++                        <p className="font-semibold text-sm">
++                          {batchStatusFilter === 'All' ? 'No production orders scheduled yet.' : `No ${batchStatusFilter} production orders.`}
++                        </p>
+                         <p className="text-xs mt-1 text-slate-400">
+                           Click "Launch Batch" to schedule a factory assembly batch with automated BOM calculation.
+                         </p>
+                       </td>
+                     </tr>
+                   ) : (
+-                    productionOrders.map((order) => (
++                    productionOrders
++                      .filter((order) => {
++                        if (batchStatusFilter === 'All') return true;
++                        if (batchStatusFilter === 'In Production') {
++                          return order.status === 'In Production' || order.status === 'In Assembly' || order.status === 'Planned' || order.status === 'Testing & QC';
++                        }
++                        if (batchStatusFilter === 'Completed') {
++                          return order.status === 'Completed' || order.status === 'Transferred';
++                        }
++                        if (batchStatusFilter === 'Cancelled') {
++                          return order.status === 'Cancelled';
++                        }
++                        return true;
++                      })
++                      .map((order) => (
+                       <tr key={order.id || order.orderNumber} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/40">
+                         <td className="p-3">
+                           <div className="font-mono font-bold text-blue-600 dark:text-blue-400">{order.orderNumber}</div>
+@@ -521,11 +613,18 @@ export const ManufacturingModule: React.FC<ManufacturingModuleProps> = ({ initia
+                             className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                               order.status === 'Completed' || order.status === 'Transferred'
+                                 ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300'
++                                : order.status === 'Cancelled'
++                                ? 'bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-300'
+                                 : 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300'
+                             }`}
+                           >
+                             {order.status}
+                           </span>
++                          {order.status === 'Cancelled' && order.cancelReason && (
++                            <div className="text-[10px] text-rose-600 dark:text-rose-400 mt-1 max-w-[130px] truncate" title={order.cancelReason}>
++                              {order.cancelReason}
++                            </div>
++                          )}
+                         </td>
+                       <td className="p-3 text-right">
+                         <div className="flex items-center justify-end gap-1.5 flex-wrap">
+@@ -541,15 +640,17 @@ export const ManufacturingModule: React.FC<ManufacturingModuleProps> = ({ initia
+                             </button>
+                           )}
+ 
+-                          <button
+-                            type="button"
+-                            onClick={() => setSelectedOrderForCostSheet(order)}
+-                            className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-800 dark:bg-indigo-950/60 dark:text-indigo-300 font-semibold text-[11px] border border-indigo-200 dark:border-indigo-800 transition shadow-xs cursor-pointer"
+-                            title="Calculate production cost using actual batch rates and send to Finished Goods Receive"
+-                          >
+-                            <Calculator className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
+-                            <span>Cost Sheet</span>
+-                          </button>
++                          {order.status !== 'Cancelled' && (
++                            <button
++                              type="button"
++                              onClick={() => setSelectedOrderForCostSheet(order)}
++                              className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-800 dark:bg-indigo-950/60 dark:text-indigo-300 font-semibold text-[11px] border border-indigo-200 dark:border-indigo-800 transition shadow-xs cursor-pointer"
++                              title="Calculate production cost using actual batch rates and send to Finished Goods Receive"
++                            >
++                              <Calculator className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
++                              <span>Cost Sheet</span>
++                            </button>
++                          )}
+ 
+                           {order.status === 'In Production' && (
+                             <button
+@@ -562,12 +663,35 @@ export const ManufacturingModule: React.FC<ManufacturingModuleProps> = ({ initia
+                             </button>
+                           )}
+ 
++                          {order.status !== 'Completed' && order.status !== 'Transferred' && order.status !== 'Cancelled' && (
++                            <button
++                              type="button"
++                              onClick={() => {
++                                setOrderToCancel(order);
++                                setCancelReason('');
++                                setCancelError(null);
++                              }}
++                              className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 dark:bg-rose-950/60 dark:text-rose-300 font-semibold text-[11px] border border-rose-200 dark:border-rose-900 transition shadow-xs cursor-pointer"
++                              title="Cancel this production order / batch"
++                            >
++                              <Ban className="w-3.5 h-3.5 text-rose-600 dark:text-rose-400" />
++                              <span>Cancel</span>
++                            </button>
++                          )}
++
+                           {(order.status === 'Completed' || order.status === 'Transferred') && (
+                             <span className="text-[11px] text-emerald-600 dark:text-emerald-400 flex items-center justify-end gap-1 font-semibold ml-1">
+                               <CheckCircle2 className="w-3.5 h-3.5" />
+                               <span>Completed</span>
+                             </span>
+                           )}
++
++                          {order.status === 'Cancelled' && (
++                            <span className="text-[11px] text-rose-600 dark:text-rose-400 flex items-center justify-end gap-1 font-semibold ml-1" title={order.cancelReason || 'Cancelled'}>
++                              <XCircle className="w-3.5 h-3.5" />
++                              <span>Cancelled</span>
++                            </span>
++                          )}
+                         </div>
+                       </td>
+                     </tr>
+@@ -1046,6 +1170,141 @@ export const ManufacturingModule: React.FC<ManufacturingModuleProps> = ({ initia
+           }}
+         />
+       )}
++
++      {/* Modal: Production Order Cancellation Confirmation */}
++      {orderToCancel && (
++        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4 animate-in fade-in duration-150">
++          <div className="relative w-full max-w-lg rounded-2xl bg-white dark:bg-slate-900 shadow-2xl border border-rose-200 dark:border-rose-900/50 overflow-hidden">
++            {/* Header */}
++            <div className="p-5 border-b border-rose-100 dark:border-rose-950/60 bg-rose-50/60 dark:bg-rose-950/30 flex items-start justify-between">
++              <div className="flex items-center gap-3">
++                <div className="w-10 h-10 rounded-xl bg-rose-100 dark:bg-rose-900/40 text-rose-600 dark:text-rose-400 flex items-center justify-center shrink-0">
++                  <Ban className="w-5 h-5" />
++                </div>
++                <div>
++                  <h3 className="font-bold text-base text-slate-900 dark:text-white">
++                    Cancel Production Order
++                  </h3>
++                  <p className="text-xs text-rose-600 dark:text-rose-400 font-medium">
++                    Order: {orderToCancel.orderNumber || orderToCancel.id} &bull; Batch: {orderToCancel.batchNumber}
++                  </p>
++                </div>
++              </div>
++              <button
++                type="button"
++                onClick={() => {
++                  setOrderToCancel(null);
++                  setCancelReason('');
++                  setCancelError(null);
++                }}
++                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
++              >
++                <X className="w-5 h-5" />
++              </button>
++            </div>
++
++            {/* Body */}
++            <div className="p-5 space-y-4 text-xs">
++              {/* Order Info Summary */}
++              <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-800 grid grid-cols-2 gap-3">
++                <div>
++                  <span className="text-[10px] text-slate-500 uppercase font-semibold">Product &amp; Model</span>
++                  <div className="font-bold text-slate-900 dark:text-white truncate mt-0.5">
++                    {orderToCancel.productName}
++                  </div>
++                  <div className="text-[10px] text-slate-500 font-mono">
++                    Model: {orderToCancel.model}
++                  </div>
++                </div>
++                <div>
++                  <span className="text-[10px] text-slate-500 uppercase font-semibold">Scheduled Quantity</span>
++                  <div className="font-bold text-slate-900 dark:text-white font-mono mt-0.5">
++                    {orderToCancel.plannedQty || 0} Units
++                  </div>
++                  <div className="text-[10px] text-slate-500">
++                    Kushtia Manufacturing Plant
++                  </div>
++                </div>
++              </div>
++
++              {/* Warning Notice */}
++              <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900/50 flex items-start gap-2.5">
++                <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
++                <div className="text-slate-700 dark:text-slate-300 text-xs leading-relaxed">
++                  Cancelling will stop manufacturing operations for this order and change its status to <span className="font-bold text-rose-600 dark:text-rose-400">Cancelled</span>. Any unconsumed raw materials remain in warehouse inventory.
++                </div>
++              </div>
++
++              {/* Cancellation Reason Selection */}
++              <div>
++                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
++                  Cancellation Reason <span className="text-slate-400 font-normal">(Select quick preset or type notes)</span>
++                </label>
++                <div className="flex flex-wrap gap-1.5 mb-2.5">
++                  {[
++                    'Raw material shortage / cell defect',
++                    'Engineering BOM revision',
++                    'Customer order cancelled / rescheduled',
++                    'QA impedance test mismatch',
++                    'Spot-welder maintenance hold',
++                  ].map((preset) => (
++                    <button
++                      key={preset}
++                      type="button"
++                      onClick={() => setCancelReason(preset)}
++                      className={`px-2.5 py-1 rounded-lg text-[10px] font-medium border transition cursor-pointer ${
++                        cancelReason === preset
++                          ? 'bg-rose-100 text-rose-800 dark:bg-rose-950 dark:text-rose-200 border-rose-300 dark:border-rose-800 shadow-xs'
++                          : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-700 hover:bg-slate-200 dark:hover:bg-slate-700'
++                      }`}
++                    >
++                      {preset}
++                    </button>
++                  ))}
++                </div>
++                <textarea
++                  rows={2}
++                  value={cancelReason}
++                  onChange={(e) => setCancelReason(e.target.value)}
++                  placeholder="Enter specific notes or supervisor reason for cancelling this order..."
++                  className="w-full px-3 py-2 rounded-xl bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-900 dark:text-white placeholder-slate-400 focus:outline-hidden focus:ring-2 focus:ring-rose-500 text-xs resize-none"
++                />
++              </div>
++
++              {cancelError && (
++                <div className="p-2.5 rounded-lg bg-rose-50 dark:bg-rose-950/60 text-rose-700 dark:text-rose-300 text-xs font-medium border border-rose-200 dark:border-rose-900">
++                  {cancelError}
++                </div>
++              )}
++            </div>
++
++            {/* Footer */}
++            <div className="p-4 bg-slate-50 dark:bg-slate-800/60 border-t border-slate-200 dark:border-slate-800 flex items-center justify-end gap-2">
++              <button
++                type="button"
++                onClick={() => {
++                  setOrderToCancel(null);
++                  setCancelReason('');
++                  setCancelError(null);
++                }}
++                disabled={isCancellingOrder}
++                className="px-3.5 py-1.5 rounded-xl border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 font-semibold text-xs transition cursor-pointer"
++              >
++                Keep Order
++              </button>
++              <button
++                type="button"
++                onClick={handleConfirmCancel}
++                disabled={isCancellingOrder}
++                className="flex items-center gap-1.5 px-4 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs transition shadow-xs cursor-pointer disabled:opacity-50"
++              >
++                <Ban className="w-3.5 h-3.5" />
++                <span>{isCancellingOrder ? 'Cancelling...' : 'Confirm Order Cancellation'}</span>
++              </button>
++            </div>
++          </div>
++        </div>
++      )}
+     </div>
+   );
+ };
+diff --git a/src/context/ERPContext.tsx b/src/context/ERPContext.tsx
+index 269c096..9ae8e59 100644
+--- a/src/context/ERPContext.tsx
++++ b/src/context/ERPContext.tsx
+@@ -312,6 +312,7 @@ interface ERPContextType {
+   refreshProductionOrders?: () => Promise<void>;
+   createProductionOrder: (order: Partial<ProductionOrder> & Omit<ProductionOrder, 'id' | 'completedQty'>) => Promise<{ success: boolean; id?: string; error?: string }>;
+   completeProductionOrder: (orderId: string) => Promise<{ success: boolean; error?: string }>;
++  cancelProductionOrder: (orderId: string, reason?: string) => Promise<{ success: boolean; error?: string }>;
+   updateProductBOM: (productId: string, bom: Product['bom']) => void;
+ 
+   // Raw Material Batch Tracking, Barcodes, Inventory, Costing & Receiving
+@@ -5768,6 +5769,56 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children
+     return { success: true };
+   };
+ 
++  const cancelProductionOrder = async (orderId: string, reason?: string): Promise<{ success: boolean; error?: string }> => {
++    let cancelledOrderNumber = orderId;
++    let cancelledBatchNumber = '';
++
++    setProductionOrders((prev) =>
++      prev.map((order) => {
++        if ((order.id === orderId || order.orderNumber === orderId) && order.status !== 'Completed' && order.status !== 'Cancelled') {
++          cancelledOrderNumber = order.orderNumber || order.id;
++          cancelledBatchNumber = order.batchNumber || '';
++
++          addAuditLog(
++            'PRODUCTION_CANCELLED',
++            'Kushtia Manufacturing Plant',
++            `Cancelled production order ${cancelledOrderNumber} (Batch: ${cancelledBatchNumber}).${reason ? ` Reason: ${reason}` : ''}`
++          );
++
++          return {
++            ...order,
++            status: 'Cancelled',
++            cancelReason: reason || 'Cancelled by supervisor',
++            cancelledAt: new Date().toISOString(),
++          };
++        }
++        return order;
++      })
++    );
++
++    // Sync status to Supabase
++    const sb = getSupabase();
++    if (sb) {
++      try {
++        const updatePayload: any = {
++          status: 'Cancelled',
++          updated_at: new Date().toISOString(),
++        };
++        const isNumeric = /^\d+$/.test(orderId);
++        if (isNumeric) {
++          await sb.from('production_orders').update(updatePayload).eq('id', Number(orderId));
++        } else {
++          await sb.from('production_orders').update(updatePayload).eq('order_number', cancelledOrderNumber);
++        }
++        return { success: true };
++      } catch (e: any) {
++        console.warn('Supabase cancelProductionOrder notice:', e);
++        return { success: false, error: e?.message };
++      }
++    }
++    return { success: true };
++  };
++
+   const updateProductBOM = async (productId: string, bom: Product['bom']): Promise<{ success: boolean; error?: string }> => {
+     setProducts((prev) =>
+       prev.map((p) => {
+@@ -13154,6 +13205,7 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children
+         refreshProductionOrders,
+         createProductionOrder,
+         completeProductionOrder,
++        cancelProductionOrder,
+         updateProductBOM,
+         // Ensec v29 Upgraded Modules
+         inventoryBatches,
+diff --git a/src/types/erp.ts b/src/types/erp.ts
+index 98ddaa2..8eaa5df 100644
+--- a/src/types/erp.ts
++++ b/src/types/erp.ts
+@@ -715,13 +715,16 @@ export interface ProductionOrder {
+   batchNumber?: string;
+   plannedQty?: number;
+   completedQty?: number;
+-  status?: 'Planned' | 'In Assembly' | 'Testing & QC' | 'Completed' | 'Transferred' | 'In Production' | string;
++  status?: 'Planned' | 'In Assembly' | 'Testing & QC' | 'Completed' | 'Transferred' | 'In Production' | 'Cancelled' | string;
+   startDate?: string;
+   targetDate?: string;
+   manufacturingDate?: string;
+   date?: string;
+   shiftManager?: string;
+   notes?: string;
++  cancelReason?: string;
++  cancelledAt?: string;
++  cancelledBy?: string;
+   rawMaterialCostBDT?: number;
+   conversionCostBDT?: number;
+   totalProductionCostBDT?: number;
+-- 
+2.34.1
+
+
+From 5d1ff8913fa663892dab909de334fd645ec1bfe4 Mon Sep 17 00:00:00 2001
+From: Shamsul-Haq <shamsulhaque.jesbd@gmail.com>
+Date: Wed, 4 Nov 2026 11:38:24 +0000
+Subject: [PATCH 2/4] fix(manufacturing): make raw materials issue list
+ scrollable with search and sticky headers
+
+---
+ .../manufacturing/MaterialIssueModal.tsx      | 186 ++++++++++++++----
+ 1 file changed, 149 insertions(+), 37 deletions(-)
+
+diff --git a/src/components/manufacturing/MaterialIssueModal.tsx b/src/components/manufacturing/MaterialIssueModal.tsx
+index ac7009d..0e2cf0a 100644
+--- a/src/components/manufacturing/MaterialIssueModal.tsx
++++ b/src/components/manufacturing/MaterialIssueModal.tsx
+@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
+ import { useERP } from '../../context/ERPContext';
+ import { 
+   PackageMinus, Barcode, AlertTriangle, CheckCircle2, 
+-  Clock, ShieldCheck, X, Plus, Trash2
++  Clock, ShieldCheck, X, Plus, Trash2, Search, Filter
+ } from 'lucide-react';
+ import { BatchBarcodeScannerModal } from '../inventory/BatchBarcodeScannerModal';
+ import { ProductionOrder, InventoryBatch } from '../../types/erp';
+@@ -34,7 +34,7 @@ export const MaterialIssueModal: React.FC<MaterialIssueModalProps> = ({
+     rawMaterials, 
+     inventoryBatches, 
+     products, 
+-    issueMaterialsForProduction,
++    issueMaterialsForProduction, 
+     formatCurrency 
+   } = useERP();
+ 
+@@ -44,6 +44,8 @@ export const MaterialIssueModal: React.FC<MaterialIssueModalProps> = ({
+   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+   const [scannerRowId, setScannerRowId] = useState<string | null>(null);
+   const [rowToDeleteId, setRowToDeleteId] = useState<string | null>(null);
++  const [searchQuery, setSearchQuery] = useState('');
++  const [categoryFilter, setCategoryFilter] = useState('All');
+ 
+   // Derive the Production Order's official batch number (e.g. KUS-B2610-25 or PR-KUS-2026-325)
+   const poBatchNumber = order.batchNumber?.trim() || `KUS-B2610-${order.orderNumber?.replace(/\D/g, '').slice(-2) || '25'}`;
+@@ -296,11 +298,32 @@ export const MaterialIssueModal: React.FC<MaterialIssueModalProps> = ({
+     }
+   };
+ 
++  const availableCategories = ['All', ...Array.from(new Set(
++    issueRows.map(r => {
++      const rm = rawMaterials.find(m => String(m.id) === String(r.materialId) || m.code === r.materialId);
++      return rm?.category || 'General';
++    })
++  )).filter(Boolean)];
++
++  const filteredRows = issueRows.filter(row => {
++    const rm = rawMaterials.find(m => String(m.id) === String(row.materialId) || m.code === row.materialId);
++    const rowCategory = rm?.category || 'General';
++    if (categoryFilter !== 'All' && rowCategory !== categoryFilter) return false;
++
++    if (!searchQuery.trim()) return true;
++    const q = searchQuery.toLowerCase().trim();
++    const name = rm?.name?.toLowerCase() || '';
++    const code = rm?.code?.toLowerCase() || '';
++    const cat = rowCategory.toLowerCase();
++    const id = String(row.materialId).toLowerCase();
++    return name.includes(q) || code.includes(q) || cat.includes(q) || id.includes(q);
++  });
++
+   return (
+-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-black/60 backdrop-blur-xs overflow-y-auto">
+-      <div className="relative w-full max-w-6xl xl:max-w-7xl 2xl:max-w-[1400px] bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl p-5 sm:p-7 space-y-5 text-xs max-h-[92vh] flex flex-col">
++    <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-black/60 backdrop-blur-xs overflow-y-auto">
++      <div className="relative w-full max-w-6xl xl:max-w-7xl 2xl:max-w-[1400px] bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl p-4 sm:p-6 space-y-4 text-xs max-h-[94vh] flex flex-col overflow-hidden">
+         {/* Header */}
+-        <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
++        <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3 shrink-0">
+           <div className="flex items-center gap-2.5">
+             <div className="p-2.5 bg-amber-50 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400 rounded-xl">
+               <PackageMinus className="w-5 h-5" />
+@@ -326,14 +349,14 @@ export const MaterialIssueModal: React.FC<MaterialIssueModalProps> = ({
+         </div>
+ 
+         {errorMsg && (
+-          <div className="p-3 bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded-xl text-red-700 dark:text-red-300 flex items-center gap-2">
++          <div className="p-3 bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded-xl text-red-700 dark:text-red-300 flex items-center gap-2 shrink-0">
+             <AlertTriangle className="w-4 h-4 shrink-0" />
+             <span>{errorMsg}</span>
+           </div>
+         )}
+ 
+         {/* Info Banner */}
+-        <div className="p-3 bg-blue-50/80 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800/60 rounded-xl text-blue-800 dark:text-blue-300 flex items-start gap-2.5">
++        <div className="p-3 bg-blue-50/80 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800/60 rounded-xl text-blue-800 dark:text-blue-300 flex items-start gap-2.5 shrink-0">
+           <ShieldCheck className="w-4 h-4 shrink-0 mt-0.5 text-blue-600 dark:text-blue-400" />
+           <div className="text-xs space-y-0.5">
+             <span className="font-bold">Production Order Batch Allocation Active:</span>
+@@ -344,32 +367,79 @@ export const MaterialIssueModal: React.FC<MaterialIssueModalProps> = ({
+         </div>
+ 
+         {/* Table of Items */}
+-        <div className="space-y-2 flex-1 min-h-0 flex flex-col">
+-          <div className="flex justify-between items-center">
+-            <div className="flex items-center gap-2">
++        <div className="space-y-2.5 flex-1 min-h-0 flex flex-col">
++          {/* Header & Filter Controls */}
++          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2.5 shrink-0">
++            <div className="flex items-center gap-2 flex-wrap">
+               <span className="font-bold text-sm text-slate-800 dark:text-slate-200">
+                 Raw Materials to Issue
+               </span>
+-              <span className="text-[11px] font-semibold text-slate-400">
+-                ({issueRows.length} items from Bill of Materials)
++              <span className="px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300 font-bold text-[11px]">
++                {filteredRows.length} of {issueRows.length} items
++              </span>
++              <span className="text-[11px] text-slate-400">
++                (Scrollable list)
+               </span>
+             </div>
+-            <button
+-              type="button"
+-              onClick={handleAddRow}
+-              className="flex items-center gap-1 px-3 py-1.5 text-xs font-semibold rounded-lg bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-900/50 transition cursor-pointer"
+-            >
+-              <Plus className="w-3.5 h-3.5" />
+-              Add Extra Material
+-            </button>
++
++            <div className="flex items-center gap-2 w-full sm:w-auto">
++              {/* Quick Search */}
++              <div className="relative flex-1 sm:w-64">
++                <Search className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
++                <input
++                  type="text"
++                  placeholder="Search raw material name / code..."
++                  value={searchQuery}
++                  onChange={(e) => setSearchQuery(e.target.value)}
++                  className="w-full pl-8 pr-7 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-xs placeholder:text-slate-400 focus:outline-hidden focus:ring-2 focus:ring-blue-500"
++                />
++                {searchQuery && (
++                  <button
++                    type="button"
++                    onClick={() => setSearchQuery('')}
++                    className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 text-xs p-0.5 cursor-pointer"
++                    title="Clear search"
++                  >
++                    <X className="w-3.5 h-3.5" />
++                  </button>
++                )}
++              </div>
++
++              {/* Category Filter */}
++              {availableCategories.length > 2 && (
++                <div className="relative">
++                  <select
++                    value={categoryFilter}
++                    onChange={(e) => setCategoryFilter(e.target.value)}
++                    className="py-1.5 px-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-xs font-medium text-slate-700 dark:text-slate-300 focus:ring-2 focus:ring-blue-500 cursor-pointer"
++                  >
++                    {availableCategories.map((cat) => (
++                      <option key={cat} value={cat}>
++                        {cat === 'All' ? 'All Categories' : cat}
++                      </option>
++                    ))}
++                  </select>
++                </div>
++              )}
++
++              <button
++                type="button"
++                onClick={handleAddRow}
++                className="flex items-center gap-1 px-3 py-1.5 text-xs font-semibold rounded-lg bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-900/50 transition cursor-pointer shrink-0"
++              >
++                <Plus className="w-3.5 h-3.5" />
++                <span>Add Extra</span>
++              </button>
++            </div>
+           </div>
+ 
+-          <div className="border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden overflow-x-auto shadow-xs flex-1">
+-            <table className="w-full text-left text-xs min-w-[1050px]">
+-              <thead className="bg-slate-50 dark:bg-slate-800/80 text-slate-700 dark:text-slate-300 border-b border-slate-200 dark:border-slate-800 font-bold sticky top-0">
++          <div className="border border-slate-200 dark:border-slate-800 rounded-xl overflow-x-auto overflow-y-auto shadow-xs flex-1 min-h-[260px] max-h-[50vh]">
++            <table className="w-full text-left text-xs min-w-[1100px]">
++              <thead className="bg-slate-100 dark:bg-slate-800/90 text-slate-700 dark:text-slate-300 border-b border-slate-200 dark:border-slate-800 font-bold sticky top-0 z-20 shadow-xs">
+                 <tr>
+-                  <th className="p-3 w-[34%] min-w-[320px]">Raw Material</th>
+-                  <th className="p-3 w-[26%] min-w-[250px]">Batch / FIFO Suggestion</th>
++                  <th className="p-3 text-center w-12 min-w-[45px]">#</th>
++                  <th className="p-3 w-[33%] min-w-[300px]">Raw Material</th>
++                  <th className="p-3 w-[26%] min-w-[240px]">Batch / FIFO Suggestion</th>
+                   <th className="p-3 text-right w-24 min-w-[85px]">Available</th>
+                   <th className="p-3 text-right w-28 min-w-[95px]">Issue Qty</th>
+                   <th className="p-3 text-right w-28 min-w-[100px]">Batch Rate</th>
+@@ -379,15 +449,35 @@ export const MaterialIssueModal: React.FC<MaterialIssueModalProps> = ({
+                 </tr>
+               </thead>
+               <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+-                {issueRows.map((row) => {
+-                  const { allBatches, defaultBatch } = getBatchOptionsForMaterial(row.materialId, row.quantity);
+-                  const rm = rawMaterials.find(m => String(m.id) === String(row.materialId) || m.code === row.materialId);
+-                  const isDefaultBatch = !row.batchId || row.batchId === defaultBatch.id;
+-
+-                  return (
+-                    <React.Fragment key={row.id}>
+-                      <tr className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30 transition-colors">
+-                        {/* Material Selector with full name visibility */}
++                {filteredRows.length === 0 ? (
++                  <tr>
++                    <td colSpan={9} className="p-10 text-center text-slate-400">
++                      <p className="font-semibold text-sm">No raw materials match your search.</p>
++                      <button
++                        type="button"
++                        onClick={() => { setSearchQuery(''); setCategoryFilter('All'); }}
++                        className="mt-2 text-xs text-blue-600 dark:text-blue-400 underline font-medium cursor-pointer"
++                      >
++                        Reset filters to view all {issueRows.length} materials
++                      </button>
++                    </td>
++                  </tr>
++                ) : (
++                  filteredRows.map((row) => {
++                    const originalIdx = issueRows.findIndex(r => r.id === row.id) + 1;
++                    const { allBatches, defaultBatch } = getBatchOptionsForMaterial(row.materialId, row.quantity);
++                    const rm = rawMaterials.find(m => String(m.id) === String(row.materialId) || m.code === row.materialId);
++                    const isDefaultBatch = !row.batchId || row.batchId === defaultBatch.id;
++
++                    return (
++                      <React.Fragment key={row.id}>
++                        <tr className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30 transition-colors">
++                          {/* Row Number */}
++                          <td className="p-3 text-center font-mono text-[11px] font-bold text-slate-400">
++                            #{originalIdx}
++                          </td>
++
++                          {/* Material Selector with full name visibility */}
+                         <td className="p-3">
+                           <div className="space-y-1">
+                             <select
+@@ -401,6 +491,11 @@ export const MaterialIssueModal: React.FC<MaterialIssueModalProps> = ({
+                                   {m.name} ({m.code}) {m.category ? `• ${m.category}` : ''}
+                                 </option>
+                               ))}
++                              {!rawMaterials.some(m => String(m.id) === String(row.materialId)) && (
++                                <option value={row.materialId}>
++                                  {rm?.name || row.materialId} (Code: {rm?.code || row.materialId})
++                                </option>
++                              )}
+                             </select>
+                             {rm && (
+                               <div className="flex items-center gap-2 text-[10px] text-slate-500 dark:text-slate-400 pl-0.5">
+@@ -510,7 +605,7 @@ export const MaterialIssueModal: React.FC<MaterialIssueModalProps> = ({
+                       {/* Override Reason input if overridden */}
+                       {row.isOverride && (
+                         <tr className="bg-amber-50/50 dark:bg-amber-950/20">
+-                          <td colSpan={8} className="p-2.5 px-4">
++                          <td colSpan={9} className="p-2.5 px-4">
+                             <div className="flex items-center gap-2">
+                               <span className="text-amber-800 dark:text-amber-300 font-semibold text-[11px] whitespace-nowrap">
+                                 Override Audit Reason:
+@@ -532,14 +627,31 @@ export const MaterialIssueModal: React.FC<MaterialIssueModalProps> = ({
+                       )}
+                     </React.Fragment>
+                   );
+-                })}
++                }))}
+               </tbody>
++              <tfoot className="bg-slate-50 dark:bg-slate-800/80 font-semibold text-slate-600 dark:text-slate-400 text-xs border-t border-slate-200 dark:border-slate-800 sticky bottom-0 z-10">
++                <tr>
++                  <td colSpan={4} className="p-2.5 px-3 text-left">
++                    Total {issueRows.length} Bill of Materials items ({filteredRows.length} displayed)
++                  </td>
++                  <td className="p-2.5 text-right font-mono font-bold text-slate-900 dark:text-white">
++                    {issueRows.reduce((sum, r) => sum + r.quantity, 0).toLocaleString()}
++                  </td>
++                  <td className="p-2.5 text-right text-slate-500 text-[10px]">
++                    Total Value:
++                  </td>
++                  <td className="p-2.5 text-right font-mono font-bold text-indigo-600 dark:text-indigo-400">
++                    {formatCurrency(totalIssueCost)}
++                  </td>
++                  <td colSpan={2}></td>
++                </tr>
++              </tfoot>
+             </table>
+           </div>
+         </div>
+ 
+         {/* Issue Details & Total Cost */}
+-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
++        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2 shrink-0 border-t border-slate-100 dark:border-slate-800">
+           <div className="space-y-3">
+             <div>
+               <label className="block text-slate-600 dark:text-slate-400 mb-1 font-semibold">
+-- 
+2.34.1
+
+
+From 35fcadd60275a2fd6925dcca370cd96428dc87cf Mon Sep 17 00:00:00 2001
+From: Shamsul-Haq <shamsulhaque.jesbd@gmail.com>
+Date: Wed, 4 Nov 2026 11:54:24 +0000
+Subject: [PATCH 3/4] fix(manufacturing): provide unique key props for
+ BOMManagementModal list items and revisions
+
+---
+ .../manufacturing/BOMManagementModal.tsx        | 17 +++++++++++------
+ src/context/ERPContext.tsx                      |  1 +
+ 2 files changed, 12 insertions(+), 6 deletions(-)
+
+diff --git a/src/components/manufacturing/BOMManagementModal.tsx b/src/components/manufacturing/BOMManagementModal.tsx
+index d3241cc..0370bb3 100644
+--- a/src/components/manufacturing/BOMManagementModal.tsx
++++ b/src/components/manufacturing/BOMManagementModal.tsx
+@@ -626,7 +626,7 @@ RM-CAB-001,Silicone 8AWG Flexible High-Temp Wire Cable,3.5,MTR,1.0,Flame retarda
+                   </thead>
+                   <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                     {items.map((item, idx) => (
+-                      <tr key={idx} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30">
++                      <tr key={`bom-item-${item.materialId || 'item'}-${idx}`} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30">
+                         <td className="p-2.5">
+                           <select
+                             value={item.materialId}
+@@ -634,10 +634,15 @@ RM-CAB-001,Silicone 8AWG Flexible High-Temp Wire Cable,3.5,MTR,1.0,Flame retarda
+                             className="w-full p-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-xs"
+                           >
+                             {rawMaterials.map((rm, rmIdx) => (
+-                              <option key={`${rm.id}-${rmIdx}`} value={rm.id}>
++                              <option key={`rm-opt-${rm.id || rmIdx}-${rmIdx}`} value={rm.id}>
+                                 {rm.name} ({rm.code})
+                               </option>
+                             ))}
++                            {!rawMaterials.some(m => String(m.id) === String(item.materialId)) && item.materialId && (
++                              <option key={`rm-fallback-${item.materialId}`} value={item.materialId}>
++                                {item.materialId}
++                              </option>
++                            )}
+                           </select>
+                         </td>
+ 
+@@ -753,9 +758,9 @@ RM-CAB-001,Silicone 8AWG Flexible High-Temp Wire Cable,3.5,MTR,1.0,Flame retarda
+               </div>
+             ) : (
+               <div className="space-y-2">
+-                {existingBOM.revisions.map((rev) => (
++                {existingBOM.revisions.map((rev, revIdx) => (
+                   <div 
+-                    key={rev.id}
++                    key={rev.id || `bom-rev-${rev.version || 'v'}-${rev.revisionDate || rev.effectiveDate || revIdx}-${revIdx}`}
+                     className="p-3.5 bg-slate-50 dark:bg-slate-800/60 rounded-xl border border-slate-200 dark:border-slate-700 space-y-1.5"
+                   >
+                     <div className="flex items-center justify-between gap-2 flex-wrap">
+@@ -1054,7 +1059,7 @@ RM-CAB-001,Silicone 8AWG Flexible High-Temp Wire Cable,3.5,MTR,1.0,Flame retarda
+                       </thead>
+                       <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                         {draftRows.map((row, idx) => (
+-                          <tr key={row.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30">
++                          <tr key={row.id || `draft-row-${row.code || idx}-${idx}`} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30">
+                             <td className="p-2">
+                               {row.isMatched ? (
+                                 <div>
+@@ -1091,7 +1096,7 @@ RM-CAB-001,Silicone 8AWG Flexible High-Temp Wire Cable,3.5,MTR,1.0,Flame retarda
+                                   >
+                                     <option value="">-- Match with Existing Material --</option>
+                                     {rawMaterials.map((rm, rmIdx) => (
+-                                      <option key={`${rm.id}-${rmIdx}`} value={rm.id}>
++                                      <option key={`draft-rm-${rm.id || rmIdx}-${rmIdx}`} value={rm.id}>
+                                         {rm.name} ({rm.code})
+                                       </option>
+                                     ))}
+diff --git a/src/context/ERPContext.tsx b/src/context/ERPContext.tsx
+index 9ae8e59..da816cb 100644
+--- a/src/context/ERPContext.tsx
++++ b/src/context/ERPContext.tsx
+@@ -6883,6 +6883,7 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children
+   const updateBOMDefinition = async (bom: BOMDefinition): Promise<{ success: boolean; error?: string }> => {
+     const revisionDate = bom.effectiveDate || new Date().toISOString().substring(0, 10);
+     const newRevision: BOMRevision = {
++      id: `rev-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
+       version: bom.version,
+       revisionDate,
+       effectiveDate: revisionDate,
+-- 
+2.34.1
+
+
+From f51410727317b7390bcade7d5b242b54b56da080 Mon Sep 17 00:00:00 2001
+From: Shamsul-Haq <shamsulhaque.jesbd@gmail.com>
+Date: Wed, 4 Nov 2026 12:17:10 +0000
+Subject: [PATCH 4/4] fix(manufacturing): display accurate available stock and
+ remove hardcoded 500 fallback in material issue modal
+
+---
+ .../manufacturing/MaterialIssueModal.tsx      | 172 +++++++++++++-----
+ src/context/ERPContext.tsx                    |   3 +-
+ 2 files changed, 133 insertions(+), 42 deletions(-)
+
+diff --git a/src/components/manufacturing/MaterialIssueModal.tsx b/src/components/manufacturing/MaterialIssueModal.tsx
+index 0e2cf0a..3ebc280 100644
+--- a/src/components/manufacturing/MaterialIssueModal.tsx
++++ b/src/components/manufacturing/MaterialIssueModal.tsx
+@@ -5,7 +5,7 @@ import {
+   Clock, ShieldCheck, X, Plus, Trash2, Search, Filter
+ } from 'lucide-react';
+ import { BatchBarcodeScannerModal } from '../inventory/BatchBarcodeScannerModal';
+-import { ProductionOrder, InventoryBatch } from '../../types/erp';
++import { ProductionOrder, InventoryBatch, RawMaterial } from '../../types/erp';
+ 
+ interface MaterialIssueModalProps {
+   order: ProductionOrder;
+@@ -46,30 +46,85 @@ export const MaterialIssueModal: React.FC<MaterialIssueModalProps> = ({
+   const [rowToDeleteId, setRowToDeleteId] = useState<string | null>(null);
+   const [searchQuery, setSearchQuery] = useState('');
+   const [categoryFilter, setCategoryFilter] = useState('All');
++  const [allowInsufficientStock, setAllowInsufficientStock] = useState<boolean>(true);
+ 
+   // Derive the Production Order's official batch number (e.g. KUS-B2610-25 or PR-KUS-2026-325)
+   const poBatchNumber = order.batchNumber?.trim() || `KUS-B2610-${order.orderNumber?.replace(/\D/g, '').slice(-2) || '25'}`;
+ 
++  // Helper to reliably find a raw material across id, code, or name matching
++  const findRawMaterial = (materialId: string | undefined): RawMaterial | undefined => {
++    if (!materialId) return undefined;
++    const target = String(materialId).trim().toLowerCase();
++    const targetClean = target.replace(/[^a-z0-9]/gi, '');
++    return rawMaterials.find(m => {
++      if (!m) return false;
++      if (String(m.id).trim().toLowerCase() === target) return true;
++      if (m.code && m.code.trim().toLowerCase() === target) return true;
++      if (m.code && m.code.replace(/[^a-z0-9]/gi, '').toLowerCase() === targetClean) return true;
++      if (m.name && m.name.trim().toLowerCase() === target) return true;
++      return false;
++    });
++  };
++
++  // Helper to extract true available warehouse stock from a material record
++  const getMaterialStock = (rm: RawMaterial | undefined): number => {
++    if (!rm) return 0;
++    const candidates = [
++      rm.stockKushtia,
++      rm.stock_kushtia,
++      rm.totalAvailableStock,
++      rm.total_available_stock,
++      rm.stock,
++      rm.stock_qty,
++      rm.current_stock,
++      rm.available_qty,
++      rm.qty,
++      rm.quantity
++    ];
++    for (const c of candidates) {
++      if (c !== undefined && c !== null && !isNaN(Number(c))) {
++        const val = Number(c);
++        if (val >= 0) return val;
++      }
++    }
++    return 0;
++  };
++
+   // Helper to retrieve all eligible batches for a raw material, with the PO batch as the primary default
+   const getBatchOptionsForMaterial = (materialId: string, requiredQty: number = 0) => {
+-    const rm = rawMaterials.find(
+-      m => String(m.id) === String(materialId) || m.code === materialId
+-    );
+-    const existingBatches = inventoryBatches.filter(
+-      b => (String(b.materialId) === String(materialId) || b.materialCode === materialId) && b.availableQty > 0
+-    );
++    const rm = findRawMaterial(materialId);
++    const existingBatches = inventoryBatches.filter(b => {
++      if (!b) return false;
++      const bMatId = String(b.materialId || '').trim().toLowerCase();
++      const bMatCode = String(b.materialCode || '').trim().toLowerCase();
++      const targetId = String(materialId).trim().toLowerCase();
++      const targetClean = targetId.replace(/[^a-z0-9]/gi, '');
++      const rmCode = rm?.code?.trim().toLowerCase() || '';
++      const rmCodeClean = rmCode.replace(/[^a-z0-9]/gi, '');
++      const rmId = String(rm?.id || '').trim().toLowerCase();
++      return (
++        bMatId === targetId ||
++        bMatCode === targetId ||
++        (bMatCode && bMatCode.replace(/[^a-z0-9]/gi, '') === targetClean) ||
++        (rmCode && bMatCode === rmCode) ||
++        (rmCodeClean && bMatCode.replace(/[^a-z0-9]/gi, '') === rmCodeClean) ||
++        (rmId && bMatId === rmId)
++      ) && (Number(b.availableQty) > 0 || b.status === 'Active');
++    });
+ 
+     const poBatchId = `batch-${order.orderNumber || 'PO'}-${materialId}`;
+-    const stockQty = rm?.stockKushtia ?? 0;
+-    // Provide real factory stock if available, or at least the required quantity so production issue is not blocked
+-    const poAvail = stockQty > 0 ? stockQty : Math.max(requiredQty, 500);
++    const realFactoryStock = getMaterialStock(rm);
++    const totalBatchesStock = existingBatches.reduce((acc, b) => acc + (Number(b.availableQty) || 0), 0);
++
++    // Accurate available stock: reflects true warehouse inventory or active batch stock (no hardcoded 500)
++    const actualAvailable = realFactoryStock > 0 ? realFactoryStock : totalBatchesStock;
+     const poUnitRate = rm?.lastPurchaseUnitCostBDT || rm?.standardCostBDT || 0;
+ 
+     const poBatch: InventoryBatch = {
+       id: poBatchId,
+       batchNumber: poBatchNumber,
+       batchBarcode: `BC-${order.orderNumber?.replace(/\D/g, '') || '2026'}-${materialId}`,
+-      materialId: String(materialId),
++      materialId: String(rm?.id || materialId),
+       materialCode: rm?.code || 'RM',
+       materialName: rm?.name || 'Raw Material',
+       unit: rm?.unit || 'PCS',
+@@ -77,25 +132,27 @@ export const MaterialIssueModal: React.FC<MaterialIssueModalProps> = ({
+       supplierName: 'Kushtia Factory Store',
+       purchaseDate: order.date || order.manufacturingDate || new Date().toISOString().substring(0, 10),
+       unitPurchaseRate: poUnitRate,
+-      receivedQty: poAvail,
++      receivedQty: actualAvailable,
+       issuedQty: 0,
+-      availableQty: poAvail,
++      availableQty: actualAvailable,
+       warehouseId: 'WH-KUSHTIA',
+       warehouseName: 'Kushtia Assembly Plant',
+-      status: 'Active',
++      status: actualAvailable > 0 ? 'Active' : 'Depleted',
+     };
+ 
+     // PO batch is the primary default option according to Production Orders number
+     const allBatches: InventoryBatch[] = [poBatch];
+     existingBatches.forEach(b => {
+-      if (b.batchNumber !== poBatchNumber) {
++      if (b.batchNumber !== poBatchNumber && b.id !== poBatchId) {
+         allBatches.push(b);
+       }
+     });
+ 
+     return {
+       allBatches,
+-      defaultBatch: poBatch
++      defaultBatch: poBatch,
++      actualAvailable,
++      rm
+     };
+   };
+ 
+@@ -107,8 +164,7 @@ export const MaterialIssueModal: React.FC<MaterialIssueModalProps> = ({
+     if (product && product.bom && product.bom.length > 0) {
+       product.bom.forEach((bomItem, idx) => {
+         const requiredQty = bomItem.requiredQty * (order.plannedQty || 1);
+-        const { defaultBatch } = getBatchOptionsForMaterial(bomItem.materialId, requiredQty);
+-        const rm = rawMaterials.find(m => String(m.id) === String(bomItem.materialId) || m.code === bomItem.materialId);
++        const { defaultBatch, actualAvailable, rm } = getBatchOptionsForMaterial(bomItem.materialId, requiredQty);
+         const unitCost = bomItem.unitCostBDT || rm?.lastPurchaseUnitCostBDT || rm?.standardCostBDT || defaultBatch.unitPurchaseRate;
+ 
+         initialRows.push({
+@@ -119,7 +175,7 @@ export const MaterialIssueModal: React.FC<MaterialIssueModalProps> = ({
+           unitCost,
+           isOverride: false,
+           overrideReason: '',
+-          maxAvailable: defaultBatch.availableQty,
++          maxAvailable: actualAvailable,
+           suggestedFifoBatchId: defaultBatch.id
+         });
+       });
+@@ -128,7 +184,7 @@ export const MaterialIssueModal: React.FC<MaterialIssueModalProps> = ({
+     if (initialRows.length === 0) {
+       // Provide an empty row
+       const firstMat = rawMaterials[0];
+-      const { defaultBatch } = getBatchOptionsForMaterial(firstMat ? String(firstMat.id) : '', 1);
++      const { defaultBatch, actualAvailable } = getBatchOptionsForMaterial(firstMat ? String(firstMat.id) : '', 1);
+       initialRows.push({
+         id: `row-0-${Date.now()}`,
+         materialId: firstMat ? String(firstMat.id) : '',
+@@ -137,7 +193,7 @@ export const MaterialIssueModal: React.FC<MaterialIssueModalProps> = ({
+         unitCost: firstMat?.lastPurchaseUnitCostBDT || firstMat?.standardCostBDT || 0,
+         isOverride: false,
+         overrideReason: '',
+-        maxAvailable: defaultBatch.availableQty,
++        maxAvailable: actualAvailable,
+         suggestedFifoBatchId: defaultBatch.id
+       });
+     }
+@@ -149,8 +205,7 @@ export const MaterialIssueModal: React.FC<MaterialIssueModalProps> = ({
+   const handleMaterialChange = (rowId: string, newMaterialId: string) => {
+     const currentRow = issueRows.find(r => r.id === rowId);
+     const qty = currentRow?.quantity || 1;
+-    const { defaultBatch } = getBatchOptionsForMaterial(newMaterialId, qty);
+-    const rm = rawMaterials.find(m => String(m.id) === String(newMaterialId) || m.code === newMaterialId);
++    const { defaultBatch, actualAvailable, rm } = getBatchOptionsForMaterial(newMaterialId, qty);
+ 
+     setIssueRows(prev => prev.map(row => {
+       if (row.id !== rowId) return row;
+@@ -159,7 +214,7 @@ export const MaterialIssueModal: React.FC<MaterialIssueModalProps> = ({
+         materialId: newMaterialId,
+         batchId: defaultBatch.id, // Default to PO Batch
+         unitCost: rm?.lastPurchaseUnitCostBDT || rm?.standardCostBDT || defaultBatch.unitPurchaseRate,
+-        maxAvailable: defaultBatch.availableQty,
++        maxAvailable: actualAvailable,
+         suggestedFifoBatchId: defaultBatch.id,
+         isOverride: false,
+         overrideReason: ''
+@@ -171,17 +226,18 @@ export const MaterialIssueModal: React.FC<MaterialIssueModalProps> = ({
+   const handleBatchChange = (rowId: string, newBatchId: string) => {
+     const currentRow = issueRows.find(r => r.id === rowId);
+     if (!currentRow) return;
+-    const { allBatches, defaultBatch } = getBatchOptionsForMaterial(currentRow.materialId, currentRow.quantity);
++    const { allBatches, defaultBatch, actualAvailable } = getBatchOptionsForMaterial(currentRow.materialId, currentRow.quantity);
+     const selectedBatch = allBatches.find(b => b.id === newBatchId) || inventoryBatches.find(b => b.id === newBatchId);
+     const isOverride = newBatchId !== defaultBatch.id;
+ 
+     setIssueRows(prev => prev.map(row => {
+       if (row.id !== rowId) return row;
++      const avail = selectedBatch ? Number(selectedBatch.availableQty) : actualAvailable;
+       return {
+         ...row,
+         batchId: newBatchId,
+         unitCost: selectedBatch ? selectedBatch.unitPurchaseRate : row.unitCost,
+-        maxAvailable: selectedBatch ? selectedBatch.availableQty : row.maxAvailable,
++        maxAvailable: avail,
+         isOverride,
+         overrideReason: isOverride ? row.overrideReason : ''
+       };
+@@ -191,19 +247,19 @@ export const MaterialIssueModal: React.FC<MaterialIssueModalProps> = ({
+   // Add extra row
+   const handleAddRow = () => {
+     const firstMat = rawMaterials[0];
+-    const { defaultBatch } = getBatchOptionsForMaterial(firstMat ? String(firstMat.id) : '', 1);
++    const { defaultBatch, actualAvailable } = getBatchOptionsForMaterial(firstMat ? String(firstMat.id) : '', 1);
+ 
+     setIssueRows(prev => [
+       ...prev,
+       {
+-        id: `row-${Date.now()}`,
++        id: `row-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+         materialId: firstMat ? String(firstMat.id) : '',
+         batchId: defaultBatch.id,
+         quantity: 1,
+         unitCost: firstMat?.lastPurchaseUnitCostBDT || firstMat?.standardCostBDT || 0,
+         isOverride: false,
+         overrideReason: '',
+-        maxAvailable: defaultBatch.availableQty,
++        maxAvailable: actualAvailable,
+         suggestedFifoBatchId: defaultBatch.id
+       }
+     ]);
+@@ -260,8 +316,9 @@ export const MaterialIssueModal: React.FC<MaterialIssueModalProps> = ({
+         setErrorMsg(`Row ${i + 1}: Quantity must be greater than 0.`);
+         return;
+       }
+-      if (row.quantity > row.maxAvailable) {
+-        setErrorMsg(`Row ${i + 1}: Cannot issue ${row.quantity} units. Only ${row.maxAvailable} available in batch.`);
++      if (row.quantity > row.maxAvailable && !allowInsufficientStock && !row.isOverride) {
++        const mat = findRawMaterial(row.materialId);
++        setErrorMsg(`Row ${i + 1} (${mat?.name || row.materialId}): Issue quantity (${row.quantity}) exceeds available stock (${row.maxAvailable} ${mat?.unit || 'units'}). Check "Authorize issue if recorded stock is zero or insufficient" or enter an override reason.`);
+         return;
+       }
+       if (row.isOverride && !row.overrideReason.trim()) {
+@@ -277,7 +334,7 @@ export const MaterialIssueModal: React.FC<MaterialIssueModalProps> = ({
+         warehouseId: 'WH-KUSHTIA',
+         warehouseName: 'Kushtia Assembly Plant',
+         issuedBy,
+-        notes,
++        notes: `${notes}${issueRows.some(r => r.quantity > r.maxAvailable) ? ' [Physical issue with pending GRN reconciliation]' : ''}`,
+         items: issueRows.map(r => {
+           const { allBatches, defaultBatch } = getBatchOptionsForMaterial(r.materialId, r.quantity);
+           const batch = allBatches.find(b => b.id === r.batchId) || inventoryBatches.find(b => b.id === r.batchId) || defaultBatch;
+@@ -300,13 +357,13 @@ export const MaterialIssueModal: React.FC<MaterialIssueModalProps> = ({
+ 
+   const availableCategories = ['All', ...Array.from(new Set(
+     issueRows.map(r => {
+-      const rm = rawMaterials.find(m => String(m.id) === String(r.materialId) || m.code === r.materialId);
++      const rm = findRawMaterial(r.materialId);
+       return rm?.category || 'General';
+     })
+   )).filter(Boolean)];
+ 
+   const filteredRows = issueRows.filter(row => {
+-    const rm = rawMaterials.find(m => String(m.id) === String(row.materialId) || m.code === row.materialId);
++    const rm = findRawMaterial(row.materialId);
+     const rowCategory = rm?.category || 'General';
+     if (categoryFilter !== 'All' && rowCategory !== categoryFilter) return false;
+ 
+@@ -466,7 +523,7 @@ export const MaterialIssueModal: React.FC<MaterialIssueModalProps> = ({
+                   filteredRows.map((row) => {
+                     const originalIdx = issueRows.findIndex(r => r.id === row.id) + 1;
+                     const { allBatches, defaultBatch } = getBatchOptionsForMaterial(row.materialId, row.quantity);
+-                    const rm = rawMaterials.find(m => String(m.id) === String(row.materialId) || m.code === row.materialId);
++                    const rm = findRawMaterial(row.materialId);
+                     const isDefaultBatch = !row.batchId || row.batchId === defaultBatch.id;
+ 
+                     return (
+@@ -521,7 +578,9 @@ export const MaterialIssueModal: React.FC<MaterialIssueModalProps> = ({
+                             >
+                               {allBatches.map(b => (
+                                 <option key={b.id} value={b.id}>
+-                                  {b.batchNumber} {b.batchNumber === poBatchNumber ? `(PO: ${order.orderNumber} • Batch Stock: ${b.availableQty.toLocaleString()})` : `(Avail: ${b.availableQty} | Rate: ${formatCurrency(b.unitPurchaseRate)})`}
++                                  {b.batchNumber} {b.batchNumber === poBatchNumber 
++                                    ? `(PO Default • Stock: ${b.availableQty.toLocaleString()} ${rm?.unit || ''})` 
++                                    : `(Lot: ${b.batchNumber} • Avail: ${b.availableQty.toLocaleString()} | Rate: ${formatCurrency(b.unitPurchaseRate)})`}
+                                 </option>
+                               ))}
+                             </select>
+@@ -542,17 +601,32 @@ export const MaterialIssueModal: React.FC<MaterialIssueModalProps> = ({
+                         </td>
+ 
+                         {/* Available Qty */}
+-                        <td className="p-3 text-right font-mono font-bold text-slate-700 dark:text-slate-300">
+-                          <div>{row.maxAvailable.toLocaleString()}</div>
++                        <td className="p-3 text-right font-mono">
++                          <div className={`font-bold text-sm ${
++                            row.maxAvailable === 0
++                              ? 'text-rose-600 dark:text-rose-400'
++                              : row.maxAvailable < row.quantity
++                              ? 'text-amber-600 dark:text-amber-400'
++                              : 'text-slate-800 dark:text-slate-200'
++                          }`}>
++                            {row.maxAvailable.toLocaleString()}
++                          </div>
+                           <div className="text-[10px] font-normal text-slate-400">{rm?.unit || 'Units'}</div>
++                          {row.maxAvailable < row.quantity && (
++                            <div className={`text-[9px] font-bold uppercase tracking-tight ${
++                              row.maxAvailable === 0 ? 'text-rose-500' : 'text-amber-500'
++                            }`}>
++                              {row.maxAvailable === 0 ? 'Out of Stock' : 'Low Stock'}
++                            </div>
++                          )}
+                         </td>
+ 
+                         {/* Quantity */}
+                         <td className="p-3 text-right">
+                           <input
+                             type="number"
+-                            min="1"
+-                            max={row.maxAvailable}
++                            min="0.001"
++                            step="any"
+                             value={row.quantity}
+                             onChange={(e) => {
+                               const val = Math.max(0, Number(e.target.value));
+@@ -560,7 +634,7 @@ export const MaterialIssueModal: React.FC<MaterialIssueModalProps> = ({
+                             }}
+                             className={`w-24 p-2 text-right rounded-lg border font-mono font-bold text-xs shadow-xs ${
+                               row.quantity > row.maxAvailable
+-                                ? 'border-red-500 bg-red-50 text-red-700'
++                                ? 'border-amber-500 bg-amber-50/60 dark:bg-amber-950/20 text-amber-800 dark:text-amber-300'
+                                 : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white'
+                             }`}
+                           />
+@@ -691,6 +765,22 @@ export const MaterialIssueModal: React.FC<MaterialIssueModalProps> = ({
+               </p>
+             </div>
+ 
++            {issueRows.some(r => r.quantity > r.maxAvailable) && (
++              <div className="pt-2">
++                <label className="flex items-start gap-2 cursor-pointer select-none text-[11px] text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/40 p-2 rounded-lg border border-amber-200 dark:border-amber-900/50">
++                  <input
++                    type="checkbox"
++                    checked={allowInsufficientStock}
++                    onChange={(e) => setAllowInsufficientStock(e.target.checked)}
++                    className="mt-0.5 rounded text-amber-600 focus:ring-amber-500 cursor-pointer"
++                  />
++                  <span>
++                    <b>Authorize Factory Issue with Shortfall:</b> Recorded warehouse stock is insufficient for one or more items. Issue will proceed physically for assembly and record stock variance.
++                  </span>
++                </label>
++              </div>
++            )}
++
+             <div className="flex items-center justify-end gap-2.5 pt-3">
+               <button
+                 type="button"
+diff --git a/src/context/ERPContext.tsx b/src/context/ERPContext.tsx
+index da816cb..420f61b 100644
+--- a/src/context/ERPContext.tsx
++++ b/src/context/ERPContext.tsx
+@@ -2206,7 +2206,8 @@ export const ERPProvider: React.FC<{ children: React.ReactNode }> = ({ children
+                 unit: row.unit || 'Pieces',
+                 upc: row.upc || '',
+                 barcode: row.barcode || '',
+-                stockKushtia: Number(row.stock_kushtia) || 0,
++                stockKushtia: Number(row.stock_kushtia ?? row.stock ?? row.stock_qty ?? row.current_stock ?? row.available_qty ?? row.qty ?? row.quantity ?? 0) || 0,
++                totalAvailableStock: Number(row.total_available_stock ?? row.stock_kushtia ?? row.stock ?? row.stock_qty ?? 0) || 0,
+                 reorderLevel: Number(row.reorder_level) || 0,
+                 minimumStock: Number(row.minimum_stock) || 0,
+                 maximumStock: Number(row.maximum_stock) || 0,
+-- 
+2.34.1
+
